@@ -17,7 +17,7 @@ user = Client(
 bot = Client(
     "techzindexbot",
     api_id=int(22649259),
-    api_hash=545169590ffbfe0bf8bade55e3a1cfde,
+    api_hash="545169590ffbfe0bf8bade55e3a1cfde",
     bot_token=BOT_TOKEN,
 )
 
