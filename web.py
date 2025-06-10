@@ -1,12 +1,14 @@
 # web.py
 import os
-from streamer import media_streamer
-from fastapi import FastAPI, Request
+import asyncio
+from streamer import media_streamer # Assuming streamer.py exists
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse, Response
-from bot import get_image, get_posts, rm_cache
+from bot import get_image, get_posts, rm_cache # Corrected import for get_posts (now takes client)
 from html_gen import posts_html # Assuming html_gen.py exists
 from pyrogram.client import Client
-from config import API_ID, API_HASH, BOT_TOKEN, STRING_SESSION, HOME_PAGE_REDIRECT, BASE_URL, OWNER_ID, ADMINS
+# Import specific variables from config.py
+from config import API_ID, API_HASH, BOT_TOKEN, HOME_PAGE_REDIRECT, BASE_URL, OWNER_ID, ADMINS
 from pyrogram import filters
 from pyrogram.types import Message
 import logging
@@ -15,39 +17,20 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Pyrogram Client Initialization (using values from config.py) ---
-# IMPORTANT: These clients will be initialized when the web.py module loads.
-# Ensure all required environment variables are set in Koyeb.
-try:
-    user = Client(
-        "userbot",
-        api_id=API_ID,
-        api_hash=API_HASH,
-        session_string=STRING_SESSION,
-        # It's good practice to provide a workdir if your session files are
-        # to be stored in a specific location for persistent deployments.
-        # For ephemeral serverless, this might not be strictly necessary,
-        # but for stateful clients, it is.
-        # workdir="./sessions/userbot_sessions"
-    )
-    logger.info("Userbot client initialized.")
-except Exception as e:
-    logger.error(f"Error initializing userbot client: {e}")
-    # You might want to exit or raise an error if this is critical for startup
-    # For now, let it proceed to see if bot client can start.
-
+# --- Pyrogram Bot Client Initialization ---
+# Only one client (bot) is initialized now.
+# This relies on BOT_TOKEN, API_ID, API_HASH from environment variables via config.py
 try:
     bot = Client(
         "techzindexbot",
         api_id=API_ID,
         api_hash=API_HASH,
         bot_token=BOT_TOKEN,
-        # workdir="./sessions/bot_sessions"
     )
-    logger.info("Bot client initialized.")
+    logger.info("Pyrogram bot client initialized.")
 except Exception as e:
-    logger.error(f"Error initializing bot client: {e}")
-    # If bot client fails, the web app might still run but commands won't work.
+    logger.critical(f"CRITICAL ERROR: Failed to initialize Pyrogram bot client: {e}")
+    # Consider exiting or making the app unhealthy if bot client is critical for the app.
 
 app = FastAPI(docs_url=None, redoc_url=None)
 
@@ -60,49 +43,47 @@ try:
         STREAM_HTML = f.read()
 except FileNotFoundError as e:
     logger.critical(f"Template file not found: {e}. Please ensure 'templates/' directory and files exist.")
-    # Exit or raise an error if templates are critical for the app to function.
-    HOME_HTML = "<h1>Error: Home template not found</h1>"
-    STREAM_HTML = "<h1>Error: Stream template not found</h1>"
-
+    # Fallback HTML for critical errors
+    HOME_HTML = "<h1>Error: Home template not found</h1><p>Please check your deployment files.</p>"
+    STREAM_HTML = "<h1>Error: Stream template not found</h1><p>Please check your deployment files.</p>"
 
 # --- FastAPI Startup/Shutdown Events ---
 @app.on_event("startup")
 async def startup_event():
     """
-    Connects the Pyrogram clients when the FastAPI application starts up.
+    Connects the Pyrogram bot client when the FastAPI application starts up.
     """
-    logger.info("Starting TG Clients...")
+    logger.info("Starting TG Bot Client...")
     try:
-        if bot:
+        if bot: # Check if bot client was successfully initialized
             await bot.start()
-            logger.info("Bot client started.")
-        if user:
-            await user.start()
-            logger.info("Userbot client started.")
+            logger.info("Bot client started successfully.")
     except Exception as e:
-        logger.error(f"Failed to start one or more Pyrogram clients: {e}")
-        # Depending on criticality, you might want to exit or log a critical error.
+        logger.error(f"Failed to start Pyrogram bot client: {e}")
+        # The app might still run but telegram features will be broken.
     logger.info("========================================")
     logger.info("TechZIndex Started Successfully")
     logger.info("Made By TechZBots | TechShreyash")
     logger.info("========================================")
 
+    # Ensure directories for cache and downloads exist
+    os.makedirs("cache", exist_ok=True)
+    os.makedirs("downloads", exist_ok=True)
+
+
 @app.on_event("shutdown")
 async def shutdown_event():
     """
-    Stops the Pyrogram clients gracefully when the FastAPI application shuts down.
+    Stops the Pyrogram bot client gracefully when the FastAPI application shuts down.
     """
-    logger.info("Stopping TG Clients...")
+    logger.info("Stopping TG Bot Client...")
     try:
-        if bot and bot.is_connected:
+        if bot and bot.is_connected: # Check if bot client is connected before stopping
             await bot.stop()
             logger.info("Bot client stopped.")
-        if user and user.is_connected:
-            await user.stop()
-            logger.info("Userbot client stopped.")
     except Exception as e:
-        logger.error(f"Error stopping one or more Pyrogram clients: {e}")
-    logger.info("TG Clients Stopped.")
+        logger.error(f"Error stopping Pyrogram bot client: {e}")
+    logger.info("TG Bot Client Stopped.")
 
 
 # --- Web Endpoints ---
@@ -118,33 +99,37 @@ async def home_redirect():
 
 
 @app.get("/channel/{channel}")
-async def channel(channel_username: str):
+async def channel_page(channel_username: str): # Renamed for clarity, original was 'channel'
     """
     Displays posts for a given Telegram channel username.
+    Now uses the 'bot' client to fetch posts.
     """
     try:
-        posts = await get_posts(user, str(channel_username).lower())
+        # Pass the 'bot' client to get_posts
+        posts = await get_posts(bot, str(channel_username).lower())
         phtml = posts_html(posts, channel_username)
         return HTMLResponse(
             HOME_HTML.replace("POSTS", phtml).replace("CHANNEL_ID", channel_username)
         )
     except Exception as e:
-        logger.error(f"Error serving channel {channel_username}: {e}")
-        return HTMLResponse(f"<h1>Error loading channel: {e}</h1>", status_code=500)
+        logger.error(f"Error serving channel page for {channel_username}: {e}")
+        return HTMLResponse(f"<h1>Error loading channel: {e}</h1><p>Ensure bot is admin in channel and permissions are correct.</p>", status_code=500)
 
 
 @app.get("/api/posts/{channel}/{page}")
 async def get_posts_api(channel: str, page: int = 1):
     """
     API endpoint to fetch posts from a Telegram channel.
+    Now uses the 'bot' client to fetch posts.
     """
     try:
-        posts = await get_posts(user, str(channel).lower(), page)
+        # Pass the 'bot' client to get_posts
+        posts = await get_posts(bot, str(channel).lower(), page)
         phtml = posts_html(posts, channel)
         return {"html": phtml}
     except Exception as e:
         logger.error(f"Error fetching posts API for channel {channel}, page {page}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch posts: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch posts: {e}. Check bot permissions.")
 
 
 @app.get("/static/{file}")
@@ -162,12 +147,13 @@ async def static_files(file: str):
 
 
 @app.get("/api/thumb/{channel}/{id}")
-async def get_thumb(channel: str, message_id: int):
+async def get_thumb_endpoint(channel: str, message_id: int): # Renamed for clarity
     """
     Serves video thumbnail images.
+    Uses the 'bot' client to get images.
     """
     try:
-        img_path = await get_image(bot, message_id, channel)
+        img_path = await get_image(bot, message_id, channel) # Pass the 'bot' client
         if img_path and os.path.exists(img_path):
             return FileResponse(img_path, media_type="image/jpeg")
         else:
@@ -193,8 +179,9 @@ async def stream_page(channel: str, message_id: int):
 async def stream_api(channel: str, message_id: int, request: Request):
     """
     Handles streaming media from Telegram.
+    Uses the 'bot' client for streaming.
     """
-    return await media_streamer(bot, channel, message_id, request)
+    return await media_streamer(bot, channel, message_id, request) # Pass the 'bot' client
 
 
 # --- Bot Commands (handled by Pyrogram client) ---
