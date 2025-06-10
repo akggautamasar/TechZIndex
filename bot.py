@@ -1,95 +1,167 @@
+# bot.py
 from pyrogram.client import Client
 from pyrogram.types import Message
 import os
 import json
+import logging
 
+logger = logging.getLogger(__name__)
+
+# --- Cache Management Functions ---
 
 def rm_cache(channel=None):
-    print("Cleaning Cache...")
-    if not channel:
-        global image_cache
-        image_cache = {}
-        try:
-            for file in os.listdir("downloads"):
-                try:
-                    os.remove(f"downloads/{file}")
-                    print(f"Removed {file}")
-                except Exception as e:
-                    print(e)
-        except Exception as e:
-            print(e)
-    try:
-        for file in os.listdir("cache"):
+    logger.info("Cleaning Cache...")
+    # Clean image_cache (in-memory)
+    global image_cache
+    image_cache = {}
+
+    # Clean 'downloads' directory
+    downloads_path = "downloads"
+    if os.path.exists(downloads_path):
+        for file_name in os.listdir(downloads_path):
+            file_path = os.path.join(downloads_path, file_name)
             try:
-                if file.endswith(".json"):
-                    if channel:
-                        if file.startswith(channel):
-                            os.remove(f"cache/{file}")
-                            print(f"Removed {file}")
-                    else:
-                        os.remove(f"cache/{file}")
-                        print(f"Removed {file}")
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+                    logger.info(f"Removed download: {file_path}")
             except Exception as e:
-                print(e)
-    except Exception as e:
-        print(e)
+                logger.error(f"Error removing download {file_path}: {e}")
+    else:
+        logger.warning(f"Downloads directory not found: {downloads_path}")
+
+    # Clean 'cache' directory (JSON files)
+    cache_path = "cache"
+    if os.path.exists(cache_path):
+        for file_name in os.listdir(cache_path):
+            file_path = os.path.join(cache_path, file_name)
+            try:
+                if file_name.endswith(".json"):
+                    if channel:
+                        if file_name.startswith(channel):
+                            os.remove(file_path)
+                            logger.info(f"Removed cache file: {file_path}")
+                    else:
+                        os.remove(file_path)
+                        logger.info(f"Removed cache file: {file_path}")
+            except Exception as e:
+                logger.error(f"Error removing cache file {file_path}: {e}")
+    else:
+        logger.warning(f"Cache directory not found: {cache_path}")
 
 
 def get_cache(channel, page):
-    if os.path.exists(f"cache/{channel}-{page}.json"):
-        with open(f"cache/{channel}-{page}.json", "r") as f:
-            return json.load(f)["posts"]
+    cache_file_path = f"cache/{channel}-{page}.json"
+    if os.path.exists(cache_file_path):
+        try:
+            with open(cache_file_path, "r") as f:
+                logger.info(f"Loading cache from {cache_file_path}")
+                return json.load(f)["posts"]
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.error(f"Error reading cache file {cache_file_path}: {e}")
+            return None
     else:
         return None
 
 
 def save_cache(channel, cache, page):
-    with open(f"cache/{channel}-{page}.json", "w") as f:
-        json.dump(cache, f)
+    cache_dir = "cache"
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir) # Create cache directory if it doesn't exist
+
+    cache_file_path = f"{cache_dir}/{channel}-{page}.json"
+    try:
+        with open(cache_file_path, "w") as f:
+            json.dump(cache, f)
+            logger.info(f"Saved cache to {cache_file_path}")
+    except Exception as e:
+        logger.error(f"Error saving cache to {cache_file_path}: {e}")
 
 
-async def get_posts(user: Client, channel, page=1):
+# --- Pyrogram Interaction Functions ---
+
+async def get_posts(client: Client, channel: str, page: int = 1): # Changed 'user' to 'client'
+    """
+    Fetches posts from a Telegram channel using the provided Pyrogram client.
+    Caches the results.
+    """
     page = int(page)
     cache = get_cache(channel, page)
     if cache:
+        logger.info(f"Returning posts from cache for channel {channel}, page {page}")
         return cache
     else:
+        logger.info(f"Fetching posts from Telegram for channel {channel}, page {page}")
         posts = []
-        async for post in user.get_chat_history(
-            chat_id=channel, limit=50, offset=(page - 1) * 50
-        ):
-            post: Message
-            if post.video:
-                if post.video.file_name:
-                    file_name = post.video.file_name
-                elif post.caption:
-                    file_name = post.caption
-                else:
-                    file_name = post.video.file_id
+        try:
+            # Note: For bot clients, this will only work if the bot is an admin
+            # in the specified channel with 'Read channel history' permission.
+            async for post in client.get_chat_history(
+                chat_id=channel, limit=50, offset=(page - 1) * 50
+            ):
+                post: Message
+                # Ensure post.video exists and has a thumbnail
+                if post.video and post.video.thumbs:
+                    # Prefer file_name, then caption, then file_id for title
+                    file_name = post.video.file_name or post.caption or post.video.file_id
+                    title = " ".join(str(file_name).split(".")[:-1]) if isinstance(file_name, str) else str(file_name)
+                    title = title[:200].strip() # Limit title length and clean whitespace
+                    posts.append({"msg-id": post.id, "title": title})
+                elif post.caption and post.media: # Include other media with captions if needed
+                    title = post.caption[:200].strip()
+                    posts.append({"msg-id": post.id, "title": title})
 
-                file_name = file_name[:200]
-
-                title = " ".join(file_name.split(".")[:-1])
-                posts.append({"msg-id": post.id, "title": title})
+        except Exception as e:
+            logger.error(f"Error getting chat history for channel {channel}: {e}")
+            # If there's an error fetching, return empty list or raise
+            return []
 
         save_cache(channel, {"posts": posts}, page)
         return posts
 
 
-image_cache = {}
+image_cache = {} # In-memory cache for images
 
 
-async def get_image(bot: Client, file, channel):
+async def get_image(bot_client: Client, file_id_or_message_id: int, channel: str): # Renamed 'bot' to 'bot_client' for clarity
+    """
+    Downloads and caches a video thumbnail from a Telegram message.
+    'file_id_or_message_id' can be a message ID or a file ID.
+    """
     global image_cache
 
-    cache = image_cache.get(f"{channel}-{file}")
+    cache_key = f"{channel}-{file_id_or_message_id}"
+    cache = image_cache.get(cache_key)
     if cache:
-        print(f"Returning img from cache - {channel}-{file}")
+        logger.info(f"Returning image from in-memory cache: {cache_key}")
         return cache
-
     else:
-        print(f"Downloading img from Telegram - {channel}-{file}")
-        msg = await bot.get_messages(channel, int(file))
-        img = await bot.download_media(str(msg.video.thumbs[0].file_id))
-        image_cache[f"{channel}-{file}"] = img
-        return img
+        logger.info(f"Downloading image from Telegram: {cache_key}")
+        download_path = None
+        try:
+            # If file_id_or_message_id is a message ID, get the message
+            if isinstance(file_id_or_message_id, int):
+                msg = await bot_client.get_messages(channel, file_id_or_message_id)
+                if msg and msg.video and msg.video.thumbs:
+                    # Download the first thumbnail
+                    download_path = await bot_client.download_media(
+                        str(msg.video.thumbs[0].file_id),
+                        file_name=f"downloads/{cache_key}" # Save to downloads directory
+                    )
+                else:
+                    logger.warning(f"No video or thumbnail found for message ID {file_id_or_message_id} in {channel}")
+            else: # Assume it's a file_id string
+                download_path = await bot_client.download_media(
+                    str(file_id_or_message_id),
+                    file_name=f"downloads/{cache_key}"
+                )
+
+            if download_path:
+                image_cache[cache_key] = download_path
+                return download_path
+            else:
+                return None
+
+        except Exception as e:
+            logger.error(f"Error downloading image {cache_key}: {e}")
+            return None
+
