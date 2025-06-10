@@ -7,7 +7,8 @@ from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse, Resp
 from bot import get_image, get_posts, rm_cache
 from html_gen import posts_html
 from pyrogram.client import Client
-from config import API_ID, API_HASH, BOT_TOKEN, HOME_PAGE_REDIRECT, BASE_URL, OWNER_ID, ADMINS
+# Import all variables from config.py
+from config import API_ID, API_HASH, BOT_TOKEN, STRING_SESSION, HOME_PAGE_REDIRECT, BASE_URL, OWNER_ID, ADMINS
 from pyrogram import filters
 from pyrogram.types import Message
 import logging
@@ -16,17 +17,34 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Pyrogram Bot Client Initialization ---
+# --- Pyrogram Clients Initialization ---
+# Userbot client (for reading channel history)
+try:
+    user = Client(
+        "userbot_session", # Session name for userbot
+        api_id=API_ID,
+        api_hash=API_HASH,
+        session_string=STRING_SESSION,
+        # workdir="./sessions/userbot" # Optional: where session file is stored
+    )
+    logger.info("Pyrogram userbot client initialized.")
+except Exception as e:
+    logger.critical(f"CRITICAL ERROR: Failed to initialize Pyrogram userbot client: {e}")
+    # Userbot is critical for get_posts, app might not work as expected
+
+# Bot client (for commands and media streaming)
 try:
     bot = Client(
         "techzindexbot",
         api_id=API_ID,
         api_hash=API_HASH,
         bot_token=BOT_TOKEN,
+        # workdir="./sessions/bot" # Optional
     )
     logger.info("Pyrogram bot client initialized.")
 except Exception as e:
     logger.critical(f"CRITICAL ERROR: Failed to initialize Pyrogram bot client: {e}")
+
 
 app = FastAPI(docs_url=None, redoc_url=None)
 
@@ -44,13 +62,16 @@ except FileNotFoundError as e:
 # --- FastAPI Startup/Shutdown Events ---
 @app.on_event("startup")
 async def startup_event():
-    logger.info("Starting TG Bot Client...")
+    logger.info("Starting TG Clients...")
     try:
+        if user:
+            await user.start()
+            logger.info("Userbot client started successfully.")
         if bot:
             await bot.start()
             logger.info("Bot client started successfully.")
     except Exception as e:
-        logger.error(f"Failed to start Pyrogram bot client: {e}")
+        logger.error(f"Failed to start one or more Pyrogram clients: {e}")
     logger.info("========================================")
     logger.info("TechZIndex Started Successfully")
     logger.info("Made By TechZBots | TechShreyash")
@@ -61,14 +82,17 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    logger.info("Stopping TG Bot Client...")
+    logger.info("Stopping TG Clients...")
     try:
+        if user and user.is_connected:
+            await user.stop()
+            logger.info("Userbot client stopped.")
         if bot and bot.is_connected:
             await bot.stop()
             logger.info("Bot client stopped.")
     except Exception as e:
-        logger.error(f"Error stopping Pyrogram bot client: {e}")
-    logger.info("TG Bot Client Stopped.")
+        logger.error(f"Error stopping one or more Pyrogram clients: {e}")
+    logger.info("TG Clients Stopped.")
 
 # --- Web Endpoints ---
 
@@ -81,37 +105,7 @@ async def home_redirect():
 async def channel_page(channel: str):
     """
     Displays posts for a given Telegram channel username.
-    Now uses the 'bot' client to fetch posts.
-    """
-    try:
-        # Robustly format the channel identifier for Pyrogram
-        # If it's a string of digits (possibly a chat ID), convert to int
-        # Otherwise, assume it's a username and ensure it starts with '@'
-        if channel.lstrip('-').isdigit(): # Check if it's a number (allowing negative for chat IDs)
-            chat_identifier = int(channel)
-        else:
-            # Ensure it starts with @ and remove any existing leading @ to avoid double @
-            chat_identifier = "@" + channel.lstrip('@').lower()
-
-
-        posts = await get_posts(bot, chat_identifier) # Use the correctly formatted identifier
-        phtml = posts_html(posts, channel) # Use original channel for HTML display
-        return HTMLResponse(
-            HOME_HTML.replace("POSTS", phtml).replace("CHANNEL_ID", channel)
-        )
-    except Exception as e:
-        logger.error(f"Error serving channel page for {channel}: {e}")
-        # Provide more specific error info if the bot isn't admin
-        if "CHAT_ADMIN_REQUIRED" in str(e).upper() or "CHANNEL_PRIVATE" in str(e).upper():
-            return HTMLResponse(f"<h1>Error: Bot is not an administrator in this channel or channel is private.</h1><p>Please ensure your bot is an admin in the channel and has 'Read channel history' permission.</p>", status_code=403)
-        return HTMLResponse(f"<h1>Error loading channel: {e}</h1><p>An unexpected error occurred.</p>", status_code=500)
-
-
-@app.get("/api/posts/{channel}/{page}")
-async def get_posts_api(channel: str, page: int = 1):
-    """
-    API endpoint to fetch posts from a Telegram channel.
-    Now uses the 'bot' client to fetch posts.
+    Now uses the 'user' client to fetch posts.
     """
     try:
         # Robustly format the channel identifier for Pyrogram
@@ -120,13 +114,36 @@ async def get_posts_api(channel: str, page: int = 1):
         else:
             chat_identifier = "@" + channel.lstrip('@').lower()
 
-        posts = await get_posts(bot, chat_identifier, page)
+        # Use the 'user' client for get_posts
+        posts = await get_posts(user, chat_identifier)
+        phtml = posts_html(posts, channel)
+        return HTMLResponse(
+            HOME_HTML.replace("POSTS", phtml).replace("CHANNEL_ID", channel)
+        )
+    except Exception as e:
+        logger.error(f"Error serving channel page for {channel}: {e}", exc_info=True) # Log traceback
+        return HTMLResponse(f"<h1>Error loading channel: {e}</h1><p>An unexpected error occurred. Check logs for details.</p>", status_code=500)
+
+
+@app.get("/api/posts/{channel}/{page}")
+async def get_posts_api(channel: str, page: int = 1):
+    """
+    API endpoint to fetch posts from a Telegram channel.
+    Now uses the 'user' client to fetch posts.
+    """
+    try:
+        # Robustly format the channel identifier for Pyrogram
+        if channel.lstrip('-').isdigit():
+            chat_identifier = int(channel)
+        else:
+            chat_identifier = "@" + channel.lstrip('@').lower()
+
+        # Use the 'user' client for get_posts
+        posts = await get_posts(user, chat_identifier, page)
         phtml = posts_html(posts, channel)
         return {"html": phtml}
     except Exception as e:
-        logger.error(f"Error fetching posts API for channel {channel}, page {page}: {e}")
-        if "CHAT_ADMIN_REQUIRED" in str(e).upper() or "CHANNEL_PRIVATE" in str(e).upper():
-            raise HTTPException(status_code=403, detail="Bot is not an administrator in this channel or channel is private. Check bot permissions.")
+        logger.error(f"Error fetching posts API for channel {channel}, page {page}: {e}", exc_info=True) # Log traceback
         raise HTTPException(status_code=500, detail=f"Failed to fetch posts: {e}. An unexpected error occurred.")
 
 
@@ -158,7 +175,7 @@ async def get_thumb_endpoint(channel: str, message_id: int):
             logger.warning(f"Image not found for channel {channel}, ID {message_id}")
             raise HTTPException(status_code=404, detail="Image not found or could not be downloaded.")
     except Exception as e:
-        logger.error(f"Error getting thumbnail for channel {channel}, ID {message_id}: {e}")
+        logger.error(f"Error getting thumbnail for channel {channel}, ID {message_id}: {e}", exc_info=True) # Log traceback
         raise HTTPException(status_code=500, detail=f"Failed to get thumbnail: {e}")
 
 
