@@ -11,11 +11,9 @@ logger = logging.getLogger(__name__)
 
 def rm_cache(channel=None):
     logger.info("Cleaning Cache...")
-    # Clean image_cache (in-memory)
     global image_cache
     image_cache = {}
 
-    # Clean 'downloads' directory
     downloads_path = "downloads"
     if os.path.exists(downloads_path):
         for file_name in os.listdir(downloads_path):
@@ -29,7 +27,6 @@ def rm_cache(channel=None):
     else:
         logger.warning(f"Downloads directory not found: {downloads_path}")
 
-    # Clean 'cache' directory (JSON files)
     cache_path = "cache"
     if os.path.exists(cache_path):
         for file_name in os.listdir(cache_path):
@@ -66,7 +63,7 @@ def get_cache(channel, page):
 def save_cache(channel, cache, page):
     cache_dir = "cache"
     if not os.path.exists(cache_dir):
-        os.makedirs(cache_dir) # Create cache directory if it doesn't exist
+        os.makedirs(cache_dir)
 
     cache_file_path = f"{cache_dir}/{channel}-{page}.json"
     try:
@@ -79,7 +76,7 @@ def save_cache(channel, cache, page):
 
 # --- Pyrogram Interaction Functions ---
 
-async def get_posts(client: Client, channel: str, page: int = 1): # Changed 'user' to 'client'
+async def get_posts(client: Client, channel: str, page: int = 1):
     """
     Fetches posts from a Telegram channel using the provided Pyrogram client.
     Caches the results.
@@ -90,28 +87,28 @@ async def get_posts(client: Client, channel: str, page: int = 1): # Changed 'use
         logger.info(f"Returning posts from cache for channel {channel}, page {page}")
         return cache
     else:
-        logger.info(f"Fetching posts from Telegram for channel {channel}, page {page}")
+        logger.info(f"Fetching posts from Telegram for channel {channel} (ID/Username: {channel}), page {page}")
         posts = []
         try:
-            # Note: For bot clients, this will only work if the bot is an admin
-            # in the specified channel with 'Read channel history' permission.
+            # Attempt to fetch history
+            logger.info(f"Calling client.get_chat_history for channel: {channel}, limit: 50, offset: {(page - 1) * 50}")
             async for post in client.get_chat_history(
                 chat_id=channel, limit=50, offset=(page - 1) * 50
             ):
                 post: Message
-                # Ensure post.video exists and has a thumbnail
                 if post.video and post.video.thumbs:
-                    # Prefer file_name, then caption, then file_id for title
                     file_name = post.video.file_name or post.caption or post.video.file_id
                     title = " ".join(str(file_name).split(".")[:-1]) if isinstance(file_name, str) else str(file_name)
-                    title = title[:200].strip() # Limit title length and clean whitespace
+                    title = title[:200].strip()
                     posts.append({"msg-id": post.id, "title": title})
-                elif post.caption and post.media: # Include other media with captions if needed
+                elif post.caption and post.media:
                     title = post.caption[:200].strip()
                     posts.append({"msg-id": post.id, "title": title})
+            
+            logger.info(f"Successfully fetched {len(posts)} posts for channel {channel}.")
 
         except Exception as e:
-            logger.error(f"Error getting chat history for channel {channel}: {e}")
+            logger.error(f"Error getting chat history for channel {channel}: {e}", exc_info=True) # exc_info=True prints traceback
             # If there's an error fetching, return empty list or raise
             return []
 
@@ -119,10 +116,10 @@ async def get_posts(client: Client, channel: str, page: int = 1): # Changed 'use
         return posts
 
 
-image_cache = {} # In-memory cache for images
+image_cache = {}
 
 
-async def get_image(bot_client: Client, file_id_or_message_id: int, channel: str): # Renamed 'bot' to 'bot_client' for clarity
+async def get_image(bot_client: Client, file_id_or_message_id: int, channel: str):
     """
     Downloads and caches a video thumbnail from a Telegram message.
     'file_id_or_message_id' can be a message ID or a file ID.
@@ -137,22 +134,23 @@ async def get_image(bot_client: Client, file_id_or_message_id: int, channel: str
     else:
         logger.info(f"Downloading image from Telegram: {cache_key}")
         download_path = None
+        downloads_dir = "downloads"
+        os.makedirs(downloads_dir, exist_ok=True) # Ensure downloads directory exists
+
         try:
-            # If file_id_or_message_id is a message ID, get the message
             if isinstance(file_id_or_message_id, int):
                 msg = await bot_client.get_messages(channel, file_id_or_message_id)
                 if msg and msg.video and msg.video.thumbs:
-                    # Download the first thumbnail
                     download_path = await bot_client.download_media(
                         str(msg.video.thumbs[0].file_id),
-                        file_name=f"downloads/{cache_key}" # Save to downloads directory
+                        file_name=os.path.join(downloads_dir, cache_key)
                     )
                 else:
                     logger.warning(f"No video or thumbnail found for message ID {file_id_or_message_id} in {channel}")
-            else: # Assume it's a file_id string
+            else:
                 download_path = await bot_client.download_media(
                     str(file_id_or_message_id),
-                    file_name=f"downloads/{cache_key}"
+                    file_name=os.path.join(downloads_dir, cache_key)
                 )
 
             if download_path:
@@ -162,6 +160,5 @@ async def get_image(bot_client: Client, file_id_or_message_id: int, channel: str
                 return None
 
         except Exception as e:
-            logger.error(f"Error downloading image {cache_key}: {e}")
+            logger.error(f"Error downloading image {cache_key}: {e}", exc_info=True)
             return None
-
