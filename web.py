@@ -4,8 +4,8 @@ import asyncio
 from streamer import media_streamer
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse, Response
-from bot import get_image, get_posts, rm_cache
-from html_gen import posts_html
+from bot import get_image, get_posts, rm_cache # Corrected import for get_posts (now takes client)
+from html_gen import posts_html # Assuming html_gen.py exists
 from pyrogram.client import Client
 # Import all variables from config.py
 from config import API_ID, API_HASH, BOT_TOKEN, STRING_SESSION, HOME_PAGE_REDIRECT, BASE_URL, OWNER_ID, ADMINS
@@ -64,10 +64,10 @@ except FileNotFoundError as e:
 async def startup_event():
     logger.info("Starting TG Clients...")
     try:
-        if user:
+        if user: # Only start userbot if it initialized correctly
             await user.start()
             logger.info("Userbot client started successfully.")
-        if bot:
+        if bot: # Only start bot if it initialized correctly
             await bot.start()
             logger.info("Bot client started successfully.")
     except Exception as e:
@@ -79,6 +79,7 @@ async def startup_event():
 
     os.makedirs("cache", exist_ok=True)
     os.makedirs("downloads", exist_ok=True)
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -105,23 +106,23 @@ async def home_redirect():
 async def channel_page(channel: str):
     """
     Displays posts for a given Telegram channel username.
-    Now uses the 'user' client to fetch posts.
+    NOW USES THE 'USER' CLIENT TO FETCH POSTS.
     """
+    if not user or not user.is_connected: # Add a check if userbot is actually connected
+        raise HTTPException(status_code=503, detail="Userbot client is not connected. Cannot fetch channel history.")
     try:
-        # Robustly format the channel identifier for Pyrogram
         if channel.lstrip('-').isdigit():
             chat_identifier = int(channel)
         else:
             chat_identifier = "@" + channel.lstrip('@').lower()
 
-        # Use the 'user' client for get_posts
-        posts = await get_posts(user, chat_identifier)
+        posts = await get_posts(user, chat_identifier) # <--- CRITICAL: Pass 'user' client here
         phtml = posts_html(posts, channel)
         return HTMLResponse(
             HOME_HTML.replace("POSTS", phtml).replace("CHANNEL_ID", channel)
         )
     except Exception as e:
-        logger.error(f"Error serving channel page for {channel}: {e}", exc_info=True) # Log traceback
+        logger.error(f"Error serving channel page for {channel}: {e}", exc_info=True)
         return HTMLResponse(f"<h1>Error loading channel: {e}</h1><p>An unexpected error occurred. Check logs for details.</p>", status_code=500)
 
 
@@ -129,21 +130,21 @@ async def channel_page(channel: str):
 async def get_posts_api(channel: str, page: int = 1):
     """
     API endpoint to fetch posts from a Telegram channel.
-    Now uses the 'user' client to fetch posts.
+    NOW USES THE 'USER' CLIENT TO FETCH POSTS.
     """
+    if not user or not user.is_connected: # Add a check if userbot is actually connected
+        raise HTTPException(status_code=503, detail="Userbot client is not connected. Cannot fetch channel history.")
     try:
-        # Robustly format the channel identifier for Pyrogram
         if channel.lstrip('-').isdigit():
             chat_identifier = int(channel)
         else:
             chat_identifier = "@" + channel.lstrip('@').lower()
 
-        # Use the 'user' client for get_posts
-        posts = await get_posts(user, chat_identifier, page)
+        posts = await get_posts(user, chat_identifier, page) # <--- CRITICAL: Pass 'user' client here
         phtml = posts_html(posts, channel)
         return {"html": phtml}
     except Exception as e:
-        logger.error(f"Error fetching posts API for channel {channel}, page {page}: {e}", exc_info=True) # Log traceback
+        logger.error(f"Error fetching posts API for channel {channel}, page {page}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to fetch posts: {e}. An unexpected error occurred.")
 
 
@@ -167,15 +168,17 @@ async def get_thumb_endpoint(channel: str, message_id: int):
     Serves video thumbnail images.
     Uses the 'bot' client to get images.
     """
+    if not bot or not bot.is_connected: # Check if bot client is connected
+        raise HTTPException(status_code=503, detail="Bot client is not connected. Cannot get thumbnails.")
     try:
-        img_path = await get_image(bot, message_id, channel)
+        img_path = await get_image(bot, message_id, channel) # Pass the 'bot' client
         if img_path and os.path.exists(img_path):
             return FileResponse(img_path, media_type="image/jpeg")
         else:
             logger.warning(f"Image not found for channel {channel}, ID {message_id}")
             raise HTTPException(status_code=404, detail="Image not found or could not be downloaded.")
     except Exception as e:
-        logger.error(f"Error getting thumbnail for channel {channel}, ID {message_id}: {e}", exc_info=True) # Log traceback
+        logger.error(f"Error getting thumbnail for channel {channel}, ID {message_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get thumbnail: {e}")
 
 
@@ -196,7 +199,9 @@ async def stream_api(channel: str, message_id: int, request: Request):
     Handles streaming media from Telegram.
     Uses the 'bot' client for streaming.
     """
-    return await media_streamer(bot, channel, message_id, request)
+    if not bot or not bot.is_connected: # Check if bot client is connected
+        raise HTTPException(status_code=503, detail="Bot client is not connected. Cannot stream media.")
+    return await media_streamer(bot, channel, message_id, request) # Pass the 'bot' client
 
 
 # --- Bot Commands (handled by Pyrogram client) ---
