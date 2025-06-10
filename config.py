@@ -4,12 +4,10 @@ import os
 # --- Mandatory Environment Variables ---
 # Get your API_ID and API_HASH from https://my.telegram.org/
 # BOT_TOKEN from @BotFather on Telegram
-# STRING_SESSION is typically generated once by a Pyrogram userbot and then reused.
 
 API_ID = int(os.getenv("API_ID", "0")) # Provide a default '0' for type conversion safety if not set
-API_HASH = os.getenv("API_HASH", "YOUR_DEFAULT_API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_DEFAULT_BOT_TOKEN")
-STRING_SESSION = os.getenv("STRING_SESSION", "") # Should be provided, empty string is a fallback
+API_HASH = os.getenv("API_HASH", "YOUR_DEFAULT_API_HASH") # Replace with a sensible default or leave blank for safety
+BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_DEFAULT_BOT_TOKEN") # Replace with a sensible default or leave blank for safety
 
 # --- Other Configuration Variables ---
 HOME_PAGE_REDIRECT = os.getenv("HOME_PAGE_REDIRECT", "https://example.com/default_redirect")
